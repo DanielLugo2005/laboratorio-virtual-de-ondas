@@ -1,0 +1,28 @@
+import { useId, useMemo } from 'react';
+import { tracePrism, screenIntersection, wavelengthColor } from '../phase3-physics.mjs';
+type Ray=ReturnType<typeof tracePrism>;
+export function PrismScene({wavelength,incidence,apex,material,white,time}:{wavelength:number;incidence:number;apex:number;material:string;white:boolean;time:number}) {
+ const glow=useId(),glass=useId();
+ const scene=useMemo(()=>{
+   const selected=tracePrism(wavelength,incidence,apex,material),central=tracePrism(550,incidence,apex,material),normal=central.exitDirection??[1,0];
+   const center=[central.exit[0]+3*normal[0],central.exit[1]+3*normal[1]],tangent=[-normal[1],normal[0]];
+   const detector=[-1.35,1.35].map(v=>[center[0]+v*tangent[0],center[1]+v*tangent[1]]);
+   const wavelengths=white?[...Array.from({length:25},(_,i)=>380+i*370/24),wavelength]:[wavelength];
+   const rays=wavelengths.map(nm=>{const ray=tracePrism(nm,incidence,apex,material),hit=screenIntersection(ray,center,normal);const position=hit?(hit[0]-center[0])*tangent[0]+(hit[1]-center[1])*tangent[1]:null;
+     const detected=position!==null&&Math.abs(position)<=1.35;
+     const endpoint=detected?hit!:ray.exitDirection?[ray.exit[0]+ray.exitDirection[0]*2.7,ray.exit[1]+ray.exitDirection[1]*2.7]:ray.exit;
+     return {nm,ray,points:[...ray.points,endpoint],position:detected?position:null};});
+   const all=[...selected.vertices,...detector,...rays.flatMap(r=>r.points)];
+   const xmin=Math.min(...all.map(p=>p[0])),xmax=Math.max(...all.map(p=>p[0])),ymin=Math.min(...all.map(p=>p[1])),ymax=Math.max(...all.map(p=>p[1]));
+   const scale=Math.min(800/(xmax-xmin),330/(ymax-ymin));
+   const project=(p:number[])=>[450+(p[0]-(xmin+xmax)/2)*scale,215-(p[1]-(ymin+ymax)/2)*scale];
+   return {selected,normal,center,detector,rays,project};
+ },[wavelength,incidence,apex,material,white]);
+ const project=scene.project,points=(p:number[][])=>p.map(project).map(p=>p.join(',')).join(' ');
+ const path=(p:number[][])=>p.map((v,i)=>`${i?'L':'M'}${project(v).join(',')}`).join(' ');
+ const progress=(time%9)/9;
+ const selected=scene.selected,detected=scene.rays.filter(r=>r.position!==null),lo=Math.min(...detected.map(r=>r.position!)),hi=Math.max(...detected.map(r=>r.position!));
+ const normal=[-Math.cos(apex/2*Math.PI/180),Math.sin(apex/2*Math.PI/180)];
+ const entryNormal=[-1,1].map(v=>[selected.entry[0]+normal[0]*v*.4,selected.entry[1]+normal[1]*v*.4]);
+ return <><div className="science-scroll"><svg className="phase-scene prism-scene" viewBox="0 0 900 460" role="img" aria-label="Rayos calculados con Snell atraviesan un prisma triangular dispersivo y llegan a una pantalla"><defs><linearGradient id={glass} x1="0" x2="1" y1="0" y2="1"><stop stopColor="#81d8ed" stopOpacity=".22"/><stop offset=".5" stopColor="#376b8a" stopOpacity=".15"/><stop offset="1" stopColor="#c1eef9" stopOpacity=".35"/></linearGradient><filter id={glow}><feGaussianBlur stdDeviation="2.5"/></filter></defs><text x="35" y="28">Incidencia θi = {incidence.toFixed(1)}°</text><text x="300" y="28">Refracción θr = {selected.refraction.toFixed(2)}°</text><text x="600" y="28">Desviación δ = {selected.deviation?.toFixed(2)??'Sin salida'}°</text><polygon points={points(selected.vertices.map(p=>[p[0]+.07,p[1]-.05]))} fill="#34607833" stroke="#5a92a199"/><polygon points={points(selected.vertices)} fill={`url(#${glass})`} stroke="#a2d8e4" strokeWidth="1.6"/><path d={path(entryNormal)} stroke="#9bb7c4" strokeDasharray="4 5"/>{scene.rays.map(({nm,ray,points:rayPoints},i)=><g key={i} data-optical-ray={nm}><path d={path(rayPoints.slice(1))} stroke={wavelengthColor(nm)} strokeWidth={nm===wavelength?3:1.5} fill="none" opacity={nm===wavelength?.85:.6}/><path d={path(rayPoints.slice(1))} stroke={wavelengthColor(nm)} strokeWidth="7" filter={`url(#${glow})`} fill="none" opacity=".2"/>{ray.events.filter(e=>e.tir).map((e,j)=><circle key={j} cx={project(e.point)[0]} cy={project(e.point)[1]} r="4" stroke="#ffd894" fill="#17232e"/>)}</g>)}<path d={path(selected.points.slice(0,2))} stroke={white?'#e6f0f5':wavelengthColor(wavelength)} strokeWidth="5" fill="none" opacity=".9"/><path d={path(scene.rays[scene.rays.length-1].points)} pathLength="100" stroke="#f4efcf" strokeWidth="2" fill="none" strokeDasharray="2 98" strokeDashoffset={-progress*100}/><path d={path(scene.detector)} stroke="#c1d3dd" strokeWidth="8"/>{detected.map((r,i)=>{const p=[scene.center[0]-scene.normal[1]*r.position!,scene.center[1]+scene.normal[0]*r.position!],screen=project(p);return <circle key={i} cx={screen[0]} cy={screen[1]} r="4" fill={wavelengthColor(r.nm)}/>;})}<text x="35" y="418">Luz {white?'blanca: 25 longitudes de onda de referencia':'monocromática'} · prisma {material==='bk7'?'N-BK7':'N-SF11'}</text><text x="35" y="442">○ Reflexión interna total · línea discontinua: normal de entrada</text>{detected.length>1&&hi-lo>1e-8&&<g transform="translate(645,355)"><rect width="225" height="85" rx="8" fill="#10202bee" stroke="#36505d"/><text x="12" y="20">Pantalla · detalle ampliado</text>{detected.map((r,i)=><line key={i} x1={15+(r.position!-lo)/(hi-lo)*195} x2={15+(r.position!-lo)/(hi-lo)*195} y1="32" y2="57" stroke={wavelengthColor(r.nm)} strokeWidth="4"/>)}<text x="12" y="75">Dispersión real · escala local</text></g>}</svg></div><p className="scene-note">Las trayectorias se obtienen por intersección con las tres caras del prisma. El punto luminoso explica el recorrido: su velocidad no representa el tiempo de vuelo de la luz. {selected.reflections>0?`El rayo seleccionado experimenta ${selected.reflections} reflexiones internas totales antes de salir.`:'El rayo seleccionado se refracta en ambas interfaces.'}</p></>;
+}

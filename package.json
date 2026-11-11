@@ -1,0 +1,25 @@
+{
+  "name": "laboratorio-virtual-de-ondas",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && node scripts/check-media.mjs && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test tests/*.test.mjs",
+    "check:media": "node scripts/check-media.mjs"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "~5.7.2",
+    "vite": "^6.1.0"
+  },
+  "packageManager": "pnpm@11.25.0"
+}

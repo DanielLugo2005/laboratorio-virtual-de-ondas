@@ -1,0 +1,284 @@
+// Uso: node scripts/browser-check.mjs [ruta absoluta a playwright/index.mjs]
+import { pathToFileURL } from 'node:url';
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+const { chromium } = await import(process.argv[2] ? pathToFileURL(process.argv[2]).href : 'playwright');
+const baseUrl = process.argv[3] || 'http://127.0.0.1:5175/laboratorio-virtual-de-ondas';
+const server = process.argv[3] ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js','preview','--host','127.0.0.1','--port','5175','--strictPort'], {stdio:['ignore','pipe','pipe'],windowsHide:true});
+if(server) await new Promise((resolve,reject)=>{
+  const timeout=setTimeout(()=>{server.kill();reject(new Error('El servidor no inició'));},20000);
+  server.stdout.on('data',data=>{if(String(data).includes('Local:')){clearTimeout(timeout);resolve();}});
+  server.once('exit',code=>{clearTimeout(timeout);reject(new Error(`Servidor terminó: ${code}`));});
+});
+const browser = await chromium.launch({ channel:'msedge', headless:true });
+try {
+  const page = await browser.newPage({ viewport:{width:1440,height:1000}, reducedMotion:'no-preference' });
+  const errors=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(`${baseUrl}/`);
+  await page.getByRole('heading',{name:/Laboratorio virtual/}).waitFor();
+  assert.equal(await page.locator('.module-card').count(),9);
+  assert.equal(await page.locator('video').count(),0);
+  assert.ok(!(await page.locator('body').innerText()).match(/fase [1-4]|etapa [1-4]/i));
+  await mkdir('verification',{recursive:true});
+  await page.screenshot({path:'verification/escritorio.png',fullPage:true});
+  await page.getByRole('link',{name:/Entrar al laboratorio/}).click();
+  await page.getByRole('heading',{name:'Onda transversal',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Pausar',exact:true}).click();
+  const frozen=await page.locator('.simulation-top output').innerText();
+  await page.waitForTimeout(180);
+  assert.equal(await page.locator('.simulation-top output').innerText(),frozen);
+  await page.getByRole('slider',{name:/Frecuencia/}).fill('2');
+  assert.match(await page.locator('.readouts').innerText(),/2.00 m/);
+  const before=await page.locator('.science-view path[stroke-width="3"]').getAttribute('d');
+  await page.getByRole('slider',{name:/Amplitud/}).fill('0.8');
+  assert.notEqual(await page.locator('.science-view path[stroke-width="3"]').getAttribute('d'),before);
+  await page.getByRole('button',{name:'Reiniciar',exact:true}).click();
+  assert.match(await page.locator('.simulation-top output').innerText(),/0.00/);
+  await page.getByRole('button',{name:/Cámara lenta/}).click();
+  assert.equal(await page.getByRole('button',{name:/Cámara lenta/}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('checkbox',{name:/Perturbación aislada/}).check();
+  assert.equal(await page.getByRole('slider',{name:/Frecuencia/}).count(),0);
+  await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+  await page.waitForTimeout(250);
+  assert.notEqual(await page.locator('.simulation-top output').innerText(),'t = 0.00 s');
+  await page.getByRole('button',{name:'Pausar',exact:true}).click();
+  await page.getByRole('button',{name:/Restablecer parámetros/}).click();
+  await page.getByRole('textbox',{name:'Mi predicción',exact:true}).fill('Al duplicar f, λ se reduce a la mitad.');
+  await page.getByRole('textbox',{name:'Mis observaciones y comparación',exact:true}).fill('La relación v = λf se conserva.');
+  await page.getByRole('button',{name:'Registrar resultado',exact:true}).click();
+  assert.equal(await page.locator('tbody tr').count(),1);
+  const downloadPromise=page.waitForEvent('download');
+  await page.getByRole('button',{name:/Exportar CSV/}).click();
+  const download=await downloadPromise;
+  await download.saveAs('verification/experimento.csv');
+  await page.reload();
+    await page.locator('tbody tr').first().waitFor();
+  assert.equal(await page.locator('tbody tr').count(),1);
+  await page.getByRole('button',{name:'Se reduce a la mitad',exact:true}).click();
+  assert.match(await page.locator('.quiz [role="status"]').innerText(),/Correcto/);
+  for(const id of ['longitudinal','standing']){
+    await page.goto(`${baseUrl}/#${id}`);
+    await page.getByRole('button',{name:'Pausar',exact:true}).click();
+    assert.equal(await page.locator('.science-view').count(),1);
+    if(id==='longitudinal'){
+      const circle=page.locator('.science-view circle').nth(109);
+      const old=await circle.getAttribute('cx');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForTimeout(160);
+      assert.notEqual(await circle.getAttribute('cx'),old);
+    } else {
+      assert.match(await page.locator('.readouts').innerText(),/0.50 Hz/);
+      await page.getByRole('slider',{name:/Modo/}).fill('6');
+      assert.match(await page.locator('.readouts').innerText(),/1.00 Hz/);
+      await page.getByRole('checkbox',{name:/Ver las dos/}).uncheck();
+      assert.equal(await page.locator('.component-wave').count(),0);
+    }
+    await page.screenshot({path:`verification/${id}.png`,fullPage:true});
+  }
+
+  for (const id of ['sound','seismic','electromagnetic']) {
+    await page.goto(baseUrl+'/#'+id);
+    await page.getByRole('button',{name:'Pausar',exact:true}).click();
+    const frozen=await page.getByLabel('Tiempo físico').innerText();
+    await page.waitForTimeout(120);
+    assert.equal(await page.getByLabel('Tiempo físico').innerText(),frozen);
+    assert.equal(await page.locator('.guided-activities article').count(),2);
+    const oldPath=await page.locator('.phase-plot path[data-series]').first().getAttribute('d');
+    if(id==='sound') {
+      assert.match(await page.locator('.readouts').innerText(),/1.373 m/);
+      await page.getByRole('slider',{name:'Frecuencia de la fuente',exact:true}).fill('500');
+      assert.match(await page.locator('.readouts').innerText(),/0.686 m/);
+      assert.notEqual(await page.locator('.phase-plot path[data-series]').first().getAttribute('d'),oldPath);
+      await page.getByRole('slider',{name:'Amplitud del desplazamiento',exact:true}).fill('20');
+      await page.getByLabel('Medio material',{exact:true}).selectOption('cold');
+      assert.match(await page.locator('.readouts').innerText(),/331.3 m\/s/);
+      const cx=await page.locator('[data-tracked=true]').getAttribute('cx');
+      await page.getByLabel('Velocidad de reproducción').selectOption('0.5');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForTimeout(260);
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      assert.notEqual(await page.locator('[data-tracked=true]').getAttribute('cx'),cx);
+    } else if(id==='seismic') {
+      assert.match(await page.locator('.readouts').innerText(),/34.286 s/);
+      await page.getByRole('slider',{name:'Distancia foco–estación',exact:true}).fill('100');
+      assert.match(await page.locator('.readouts').innerText(),/16.667 s/);
+      await page.getByRole('slider',{name:'Rapidez de ondas P',exact:true}).fill('8');
+      assert.match(await page.locator('.readouts').innerText(),/12.5 s/);
+      await page.getByRole('slider',{name:'Distancia foco–estación',exact:true}).fill('20');
+      await page.getByLabel('Velocidad de reproducción').selectOption('2');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelectorAll('.arrival-status .arrived').length===2,{},{timeout:12000});
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      const radii=await page.locator('[data-wave]').evaluateAll(nodes=>nodes.map(n=>+n.getAttribute('r')));
+      assert.ok(radii[0]>radii[1]);
+      assert.match(await page.locator('.arrival-status').innerText(),/Recibida/);
+    } else {
+      assert.match(await page.locator('.readouts').innerText(),/599.585 nm/);
+      await page.getByRole('slider',{name:'Frecuencia',exact:true}).fill('1000');
+      assert.match(await page.locator('.readouts').innerText(),/299.792 nm/);
+      await page.getByRole('slider',{name:'Amplitud del campo E₀',exact:true}).fill('6');
+      assert.match(await page.locator('.readouts').innerText(),/20.014 nT/);
+      const before=await page.locator('[data-field=E]').getAttribute('d');
+      await page.getByRole('slider',{name:'Ángulo de cámara',exact:true}).fill('-20');
+      assert.notEqual(await page.locator('[data-field=E]').getAttribute('d'),before);
+      await page.getByRole('slider',{name:'Elevación de cámara',exact:true}).fill('35');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      const start=await page.locator('[data-field=E]').getAttribute('d');
+      await page.waitForTimeout(160);
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      assert.notEqual(await page.locator('[data-field=E]').getAttribute('d'),start);
+    }
+    await page.getByRole('button',{name:'Reiniciar',exact:true}).click();
+    assert.match(await page.getByLabel('Tiempo físico').innerText(),/0.00/);
+    await page.getByRole('button',{name:'Comparar con el resultado esperado',exact:true}).first().click();
+    assert.equal(await page.locator('.activity-result').count(),1);
+    await page.getByRole('button',{name:'Comparar con el resultado esperado',exact:true}).click();
+    assert.equal(await page.locator('.activity-result').count(),2);
+    await page.getByRole('textbox',{name:'Mi predicción',exact:true}).fill('Predicción fase 2');
+    await page.getByRole('textbox',{name:'Mis observaciones y comparación',exact:true}).fill('Los cálculos coinciden con el modelo.');
+    await page.getByRole('button',{name:'Registrar resultado',exact:true}).click();
+    assert.equal(await page.locator('tbody tr').count(),1);
+    const downloadPromise=page.waitForEvent('download');
+    await page.getByRole('button',{name:/Exportar CSV/}).click();
+    const download=await downloadPromise;
+    await download.saveAs('verification/experimento-'+id+'.csv');
+    await page.reload();
+    await page.locator('tbody tr').first().waitFor();
+    assert.equal(await page.locator('tbody tr').count(),1);
+    await page.getByRole('button',{name:'Pausar',exact:true}).click();
+    await page.screenshot({path:'verification/'+id+'.png',fullPage:true});
+    await page.setViewportSize({width:768,height:1024});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'verification/'+id+'-tablet.png',fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'verification/'+id+'-movil.png',fullPage:true});
+    await page.setViewportSize({width:1440,height:1000});
+    await page.getByRole('button',{name:/Restablecer parámetros/}).click();
+    assert.match(await page.getByLabel('Tiempo físico').innerText(),/0.00/);
+  }
+
+
+  for(const id of ['water','light','strobe']){
+    await page.goto(baseUrl+'/#'+id);
+    await page.getByRole('button',{name:'Pausar',exact:true}).click();
+    const frozen=await page.getByLabel('Tiempo físico').innerText();
+    await page.waitForTimeout(150);
+    assert.equal(await page.getByLabel('Tiempo físico').innerText(),frozen);
+    assert.equal(await page.locator('.pending').count(),0);
+    assert.equal(await page.locator('.guided-activities article').count(),id==='water'?2:3);
+    if(id==='water'){
+      assert.match(await page.locator('.readouts').innerText(),/2 m/);
+      await page.getByRole('slider',{name:'Frecuencia',exact:true}).fill('2');
+      assert.match(await page.getByText('Longitud de onda',{exact:true}).locator('..').innerText(),/1 m/);
+      await page.getByRole('slider',{name:'Frecuencia',exact:true}).fill('1');
+      await page.getByLabel('Velocidad de reproducción').selectOption('2');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForTimeout(1300);
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      const before=await page.locator('.water-canvas').evaluate(canvas=>canvas.toDataURL());
+      const elevation=await page.getByText('Elevación O',{exact:true}).locator('..').innerText();
+      await page.getByLabel('Número de fuentes',{exact:true}).selectOption('2');
+      assert.equal(await page.getByText('Elevación O',{exact:true}).locator('..').innerText(),elevation);
+      await page.getByRole('slider',{name:'Ángulo de cámara',exact:true}).fill('65');
+      assert.notEqual(await page.locator('.water-canvas').evaluate(canvas=>canvas.toDataURL()),before);
+      await page.getByRole('checkbox',{name:'Mostrar cuadrícula de la malla',exact:true}).uncheck();
+      await page.getByRole('slider',{name:'Punto O: x',exact:true}).fill('1');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForTimeout(1200);
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      const data=await page.locator('.water-canvas').evaluate(canvas=>{const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;return data.some((v,i)=>i%4===3&&v>0);});
+      assert.ok(data);
+      await page.screenshot({path:'verification/water-interference.png',fullPage:true});
+    } else if(id==='light'){
+      assert.equal(await page.locator('[data-optical-ray]').count(),26);
+      await page.getByRole('slider',{name:'Longitud de onda seleccionada',exact:true}).fill('700');
+      assert.match(await page.getByText('Frecuencia',{exact:true}).locator('..').innerText(),/428.275 THz/);
+      await page.getByRole('checkbox',{name:'Haz de luz blanca',exact:true}).uncheck();
+      assert.equal(await page.locator('[data-optical-ray]').count(),1);
+      const old=await page.locator('.phase-plot path[data-series]').getAttribute('d');
+      await page.getByLabel('Material óptico',{exact:true}).selectOption('sf11');
+      assert.notEqual(await page.locator('.phase-plot path[data-series]').getAttribute('d'),old);
+      await page.getByRole('slider',{name:'Ángulo de incidencia',exact:true}).fill('10');
+      assert.match(await page.getByText('Reflexiones internas',{exact:true}).locator('..').innerText(),/1/);
+      await page.getByRole('slider',{name:'Ángulo del prisma',exact:true}).fill('65');
+      await page.getByLabel('Velocidad de reproducción').selectOption('0.5');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForTimeout(200);
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      assert.notEqual(await page.getByLabel('Tiempo físico').innerText(),frozen);
+    } else {
+      assert.equal(await page.locator('.rotor-scene').count(),2);
+      assert.match(await page.locator('.rotor-value.apparent').innerText(),/Reposo aparente/);
+      await page.getByRole('button',{name:'Retroceso',exact:true}).click();
+      assert.match(await page.locator('.rotor-value.apparent').innerText(),/Retroceso aparente/);
+      assert.match(await page.getByText('Velocidad aparente',{exact:true}).locator('..').innerText(),/-10 RPM/);
+      await page.getByRole('button',{name:'Avance lento',exact:true}).click();
+      assert.match(await page.locator('.rotor-value.apparent').innerText(),/Avance aparente/);
+      await page.getByRole('slider',{name:'Número de aspas',exact:true}).fill('4');
+      await page.getByRole('slider',{name:'Frecuencia de observación',exact:true}).fill('40');
+      assert.match(await page.locator('.rotor-value.apparent').innerText(),/Reposo aparente/);
+      await page.getByRole('slider',{name:'Ángulo de cámara',exact:true}).fill('50');
+      await page.getByRole('button',{name:'Mostrar movimiento aparente',exact:true}).click();
+      assert.equal(await page.locator('.rotor-scene').count(),1);
+      await page.getByRole('button',{name:'Mostrar movimiento real',exact:true}).click();
+      assert.equal(await page.locator('.rotor-scene').count(),1);
+      await page.getByRole('button',{name:'Vista comparativa',exact:true}).click();
+      const angle=await page.locator('.rotor-scene').first().getAttribute('data-angle');
+      await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+      await page.waitForTimeout(200);
+      await page.getByRole('button',{name:'Pausar',exact:true}).click();
+      assert.notEqual(await page.locator('.rotor-scene').first().getAttribute('data-angle'),angle);
+    }
+    await page.getByRole('button',{name:'Reiniciar',exact:true}).click();
+    assert.match(await page.getByLabel('Tiempo físico').innerText(),/0.00/);
+    while(await page.getByRole('button',{name:'Comparar con el resultado esperado',exact:true}).count())await page.getByRole('button',{name:'Comparar con el resultado esperado',exact:true}).first().click();
+    await page.getByRole('textbox',{name:'Mi predicción',exact:true}).fill('Predicción fase 3');
+    await page.getByRole('textbox',{name:'Mis observaciones y comparación',exact:true}).fill('Resultados coherentes con el modelo.');
+    await page.getByRole('button',{name:'Registrar resultado',exact:true}).click();
+    assert.equal(await page.locator('tbody tr').count(),1);
+    const downloadPromise=page.waitForEvent('download');
+    await page.getByRole('button',{name:/Exportar CSV/}).click();
+    await (await downloadPromise).saveAs('verification/experimento-'+id+'.csv');
+    await page.reload();
+    await page.locator('tbody tr').first().waitFor();
+    assert.equal(await page.locator('tbody tr').count(),1);
+    await page.getByRole('button',{name:'Pausar',exact:true}).click();
+    await page.locator('.quiz button').nth(id==='light'?0:1).click();
+    assert.match(await page.locator('.quiz [role=status]').innerText(),/Correcto/);
+    await page.getByRole('button',{name:/Restablecer parámetros/}).click();
+    assert.match(await page.getByLabel('Tiempo físico').innerText(),/0.00/);
+    await page.getByRole('button',{name:'Iniciar',exact:true}).click();
+    await page.waitForTimeout(id==='water'?2500:350);
+    await page.getByRole('button',{name:'Pausar',exact:true}).click();
+    await page.screenshot({path:'verification/'+id+'.png',fullPage:true});
+    await page.setViewportSize({width:768,height:1024});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'verification/'+id+'-tablet.png',fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'verification/'+id+'-movil.png',fullPage:true});
+    await page.setViewportSize({width:1440,height:1000});
+  }
+  for(const id of ['transverse','longitudinal','standing','sound','seismic','electromagnetic','water','light','strobe']){
+    await page.goto(baseUrl+'/#'+id);
+    await page.locator('.control-panel').waitFor();
+    await page.getByRole('button',{name:'Modo presentación',exact:true}).click();
+    assert.equal(await page.locator('main.presentation-mode').count(),1);
+    assert.equal(await page.locator('.control-panel').isVisible(),false);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.control-panel').isVisible(),true);
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.goto(`${baseUrl}/`);
+  await page.screenshot({path:'verification/movil.png',fullPage:true});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.goto(`${baseUrl}/#transverse`);
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.screenshot({path:'verification/transversal-movil.png',fullPage:true});
+  assert.deepEqual(errors,[]);
+  console.log('Verificación correcta: 9 simulaciones y presentación en los 9 módulos, controles, modelos, actividades, persistencia, CSV y vistas de escritorio/tablet/móvil. Sin errores JavaScript.');
+} finally { await browser.close(); server?.kill(); }
+
